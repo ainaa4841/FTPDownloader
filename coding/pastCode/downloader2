@@ -1,0 +1,70 @@
+from ftplib import FTP
+from datetime import datetime, timedelta
+import os
+import time
+
+_cancel = False
+
+def set_cancel():
+    """Set cancel flag for stopping downloads."""
+    global _cancel
+    _cancel = True
+
+def ftp_connect(host, user, passwd, retries=3, delay=5):
+    """Try FTP connection with retry logic."""
+    last_exc = None
+    for _ in range(retries):
+        try:
+            ftp = FTP(host, timeout=30)
+            ftp.login(user, passwd)
+            return ftp
+        except Exception as e:
+            last_exc = e
+            time.sleep(delay)
+    raise ConnectionError(f"FTP connection failed: {last_exc}")
+
+def download_files_range(ftp_host, ftp_user, ftp_pass, station_id,
+                         start_date, end_date, start_hour, end_hour,
+                         remote_base, progress_callback=None):
+    """
+    Download files from FTP server within date/hour range.
+    Filenames are built in the format:
+    {station_id}_{YYYYMMDD}{HH}0000.txt
+    """
+    global _cancel
+    _cancel = False
+
+    downloaded = []
+    failed = []
+
+    ftp = ftp_connect(ftp_host, ftp_user, ftp_pass)
+
+    current = 0
+    total = ((end_date - start_date).days + 1) * (end_hour - start_hour + 1)
+
+    date_iter = start_date
+    while date_iter <= end_date and not _cancel:
+        for hour in range(start_hour, end_hour + 1):
+            if _cancel:
+                break
+
+            # Example filename: TBST0001_202502280000.txt
+            filename = f"{station_id}_{date_iter.strftime('%Y%m%d')}{hour:02d}0000.txt"
+            local_path = os.path.join("stations", station_id, filename)
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+
+            try:
+                with open(local_path, "wb") as f:
+                    ftp.retrbinary(f"RETR {remote_base}/{filename}", f.write)
+                downloaded.append(filename)
+            except Exception:
+                failed.append(filename)
+
+            current += 1
+            if progress_callback:
+                progress_callback(current, total, filename)
+
+        date_iter += timedelta(days=1)
+
+    ftp.quit()
+    return downloaded, failed
